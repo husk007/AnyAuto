@@ -53,6 +53,15 @@ jobs:
           git -C shizuku/api diff --check
           git -C shizuku/api diff -- server-shared/src/main/java/rikka/shizuku/server/UserService.java
 
+      - name: Generate disposable test signing key (never uploaded)
+        run: |
+          mkdir -p "$HOME/.config/.android"
+          keytool -genkeypair -noprompt \
+            -keystore "$HOME/.config/.android/debug.keystore" \
+            -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 3650 \
+            -dname "CN=Android Debug, O=Android, C=US"
+
       - name: Build Shizuku release flavor, signed with disposable test key
         working-directory: shizuku
         run: |
