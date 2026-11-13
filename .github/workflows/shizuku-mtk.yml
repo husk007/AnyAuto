@@ -1,0 +1,79 @@
+name: Build unofficial Shizuku 13.6.0 MTK compatibility test
+
+on:
+  push:
+    branches:
+      - build/shizuku-1360-mtk-fix
+    paths:
+      - "shizuku-patch/**"
+      - ".github/workflows/shizuku-mtk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout build instructions only
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install required Android SDK and NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "platforms;android-36" "build-tools;36.0.0" \
+            "ndk;29.0.13113456" "cmake;3.22.1"
+
+      - name: Clone the EXACT official Shizuku v13.6.0 sources
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --depth 1 --branch v13.6.0 https://github.com/RikkaApps/Shizuku.git shizuku
+          git -C shizuku submodule update --init --recursive
+          test "$(git -C shizuku rev-parse --short=7 HEAD)" = "2650830"
+          test "$(git -C shizuku/api rev-parse HEAD)" = "510fc988c02c3475d8c25db170f96792f105bdf8"
+
+      - name: Patch original Shizuku-API UserService (MediaTek/Android 16)
+        run: |
+          python3 shizuku-patch/apply_mediatek_fix.py shizuku
+          git -C shizuku/api diff --check
+          git -C shizuku/api diff -- server-shared/src/main/java/rikka/shizuku/server/UserService.java
+
+      - name: Build Shizuku release flavor, signed with disposable test key
+        working-directory: shizuku
+        run: |
+          echo "android.sdk.channel=3" >> gradle.properties
+          echo "org.gradle.parallel=true" >> gradle.properties
+          chmod +x gradlew
+          ./gradlew :manager:assembleRelease --no-daemon --stacktrace
+
+      - name: Verify APK signing and metadata
+        run: |
+          mkdir -p dist
+          APK="$(find shizuku/manager/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)"
+          test -n "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" | head -n 8
+          unzip -l "$APK" | grep -F "classes.dex"
+          cp "$APK" dist/Shizuku-13.6.0-MediaTek-fix1-UNOFFICIAL.apk
+          (cd dist && sha256sum *.apk > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
+
+      - name: Upload unsigned-by-official-author, locally signed test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shizuku-13.6.0-MediaTek-fix1-UNOFFICIAL
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
