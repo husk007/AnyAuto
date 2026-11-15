@@ -1,0 +1,58 @@
+diff --git a/server-shared/src/main/java/rikka/shizuku/server/UserService.java b/server-shared/src/main/java/rikka/shizuku/server/UserService.java
+--- a/server-shared/src/main/java/rikka/shizuku/server/UserService.java
++++ b/server-shared/src/main/java/rikka/shizuku/server/UserService.java
+@@ -3,9 +3,10 @@
+ import android.app.ActivityThread;
+ import android.app.Application;
+ import android.app.Instrumentation;
+ import android.content.Context;
+-import android.content.ContextHidden;
++import android.content.ContextHidden;
++import android.content.pm.ApplicationInfo;
+ import android.ddm.DdmHandleAppName;
+ import android.os.Build;
+ import android.os.IBinder;
+ import android.os.UserHandle;
+@@ -71,10 +72,40 @@
+             Context context = Refine.<ContextHidden>unsafeCast(systemContext).createPackageContextAsUser(pkg, Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY, userHandle);
+             Field mPackageInfo = context.getClass().getDeclaredField("mPackageInfo");
+             mPackageInfo.setAccessible(true);
+             Object loadedApk = mPackageInfo.get(context);
+-            Method makeApplication = loadedApk.getClass().getDeclaredMethod("makeApplication", boolean.class, Instrumentation.class);
+-            Application application = (Application) makeApplication.invoke(loadedApk, true, null);
++            // MediaTek/OEM compatibility (Shizuku#1198): this helper runs via
++            // app_process, not ActivityThread.bindApplication(). Some OEM
++            // LoadedApk builds call Application.getProcessName().equals(...)
++            // even when the process name is null. Populate AppBindData first.
++            try {
++                Class<?> bindDataClass = Class.forName("android.app.ActivityThread$AppBindData");
++                Constructor<?> bindDataConstructor = bindDataClass.getDeclaredConstructor();
++                bindDataConstructor.setAccessible(true);
++                Object bindData = bindDataConstructor.newInstance();
++
++                Field processNameField = bindDataClass.getDeclaredField("processName");
++                processNameField.setAccessible(true);
++                // Avoid running OEM resource preload meant for real app processes.
++                processNameField.set(bindData, name != null ? name : pkg + ":user_service");
++
++                Field appInfoField = bindDataClass.getDeclaredField("appInfo");
++                appInfoField.setAccessible(true);
++                // Also prevents ActivityThread.currentPackageName() from NPE.
++                appInfoField.set(bindData, new ApplicationInfo());
++
++                Field boundApplicationField = ActivityThread.class.getDeclaredField("mBoundApplication");
++                boundApplicationField.setAccessible(true);
++                if (boundApplicationField.get(activityThread) == null) {
++                    boundApplicationField.set(activityThread, bindData);
++                    Log.i(TAG, "initialized ActivityThread process state for OEM compatibility");
++                }
++            } catch (Throwable compatibilityError) {
++                Log.w(TAG, "unable to initialize OEM process state", compatibilityError);
++            }
++
++            Method makeApplication = loadedApk.getClass().getDeclaredMethod("makeApplication", boolean.class, Instrumentation.class);
++            Application application = (Application) makeApplication.invoke(loadedApk, true, null);
+             Field mInitialApplication = activityThread.getClass().getDeclaredField("mInitialApplication");
+             mInitialApplication.setAccessible(true);
+             mInitialApplication.set(activityThread, application);
+ 
